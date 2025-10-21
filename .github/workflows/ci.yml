@@ -1,0 +1,79 @@
+name: Laravel CI Workflow
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+
+jobs:
+  laravel-tests:
+    runs-on: ubuntu-latest
+    
+    # 啟動 MySQL 容器服務供測試使用
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: true
+          MYSQL_DATABASE: laravel_test_db
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup PHP Environment
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.3'
+        # 安裝 Laravel 常見擴展
+        extensions: pdo_mysql, iconv, json, gd, dom, filter, mbstring, session, xml, bcmath, redis
+        coverage: none 
+
+    - name: Get Composer Cache Directory
+      id: composer-cache
+      run: echo "dir=$(composer config cache-dir)" >> $GITHUB_OUTPUT
+
+    - name: Cache Composer Dependencies
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        # 假設 composer.lock 位於 laravel 子目錄
+        key: ${{ runner.os }}-composer-${{ hashFiles('laravel/composer.lock') }}
+        restore-keys: ${{ runner.os }}-composer-
+
+    - name: Install PHP Dependencies (Composer)
+      run: composer install --prefer-dist --no-progress --no-scripts
+      working-directory: ./laravel
+
+    - name: Prepare Laravel Environment
+      run: |
+        cp .env.example .env
+        php artisan key:generate --no-interaction
+      working-directory: ./laravel
+
+    - name: Configure DB and Cache for CI
+      run: |
+        # 設定資料庫連接至 CI 服務容器 (使用預設配置)
+        sed -i 's/DB_HOST=127.0.0.1/DB_HOST=127.0.0.1/' ./.env
+        sed -i 's/DB_DATABASE=laravel/DB_DATABASE=laravel_test_db/' ./.env
+        sed -i 's/DB_USERNAME=root/DB_USERNAME=root/' ./.env
+        sed -i 's/DB_PASSWORD=/DB_PASSWORD=/' ./.env
+        # 設定快取和隊列驅動為 Redis 
+        sed -i 's/CACHE_DRIVER=file/CACHE_DRIVER=redis/' ./.env
+        sed -i 's/SESSION_DRIVER=file/SESSION_DRIVER=redis/' ./.env
+        sed -i 's/QUEUE_CONNECTION=sync/QUEUE_CONNECTION=redis/' ./.env
+      working-directory: ./laravel
+
+    - name: Run Database Migrations
+      # --no-interaction 確保在非互動環境中運行
+      run: php artisan migrate --no-interaction
+      working-directory: ./laravel
+
+    - name: Run PHPUnit Tests
+      # 執行測試
+      run: vendor/bin/phpunit
+      working-directory: ./laravel
