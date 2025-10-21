@@ -1,0 +1,85 @@
+# Docker Compose: docker-compose.yml (WMS 專案最終修正版)
+version: '3.8'
+
+services:
+    # 1. 應用服務 (PHP-FPM)
+    app:
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        container_name: wms-app
+        restart: unless-stopped # 服務崩潰時自動重啟
+        # user 設定由 entrypoint 內部切換並處理權限，這裡不再硬性指定
+        working_dir: /var/www/html
+        volumes:
+            - ./laravel:/var/www/html
+        environment:
+            # 傳遞 DB 環境變數給 entrypoint.sh 使用
+            - DB_HOST=db
+            - DB_PORT=3306
+        healthcheck: # 檢查服務是否正常運行
+            test: ["CMD", "php", "-v"]
+            interval: 30s
+            timeout: 5s
+            retries: 3
+        depends_on:
+            # 確保 DB 服務健康後才啟動 app 容器並執行 entrypoint
+            db:
+                condition: service_healthy 
+            redis
+        networks:
+            - wms_network
+
+    # 2. Web 服務 (Nginx)
+    nginx:
+        image: nginx:stable-alpine
+        container_name: wms-nginx
+        restart: unless-stopped
+        ports:
+            - "8080:80" 
+        volumes:
+            - ./laravel:/var/www/html
+            - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+        depends_on:
+            - app
+        networks:
+            - wms_network
+
+    # 3. 資料庫服務 (MySQL 8.0)
+    db:
+        image: mysql:8.0
+        container_name: wms-db
+        restart: unless-stopped
+        environment:
+            MYSQL_DATABASE: ${DB_DATABASE:-wms_db}
+            MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-secret} 
+            MYSQL_USER: ${DB_USERNAME:-wms_user}
+            MYSQL_PASSWORD: ${DB_PASSWORD:-secret}
+        volumes:
+            - dbdata:/var/lib/mysql
+        healthcheck: # 新增 MySQL 健康檢查，供 app 服務等待 (已修正為 0.0.0.0)
+            test: ["CMD", "mysqladmin" ,"ping", "-h", "0.0.0.0"]
+            timeout: 20s
+            retries: 10
+            interval: 5s
+            start_period: 20s
+        networks:
+            - wms_network
+
+    # 4. 緩存與隊列服務 (Redis)
+    redis:
+        image: redis:alpine
+        container_name: wms-redis
+        restart: unless-stopped
+        networks:
+            - wms_network
+
+# 網路定義
+networks:
+    wms_network:
+        driver: bridge
+
+# 數據卷持久化
+volumes:
+    dbdata:
+        driver: local
